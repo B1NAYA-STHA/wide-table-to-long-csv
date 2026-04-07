@@ -57,7 +57,7 @@ async def process_resource(catalog, resource_id: str, index: int, total: int):
         )
         
         results = await pipeline.run(push_to_db=PUSH_TO_DB, debug=DEBUG)
-        logger.info(f"✓ Success — {len(results)} EAV DataFrame(s) produced")
+        logger.info(f"Success — {len(results)} EAV DataFrame(s) produced")
         
         # Extract EAV details
         eav_df = results[0] if results else None
@@ -75,7 +75,7 @@ async def process_resource(catalog, resource_id: str, index: int, total: int):
         }
         
     except Exception as e:
-        logger.error(f"✗ Failed for resource {resource_id}: {e}")
+        logger.error(f"Failed for resource {resource_id}: {e}")
         return {
             "resource_id": resource_id,
             "success": False,
@@ -109,7 +109,7 @@ async def main():
     successful = sum(1 for r in results if r["success"])
     
     for result in results:
-        status = "✓ PASSED" if result["success"] else "✗ FAILED"
+        status = "PASSED" if result["success"] else "FAILED"
         table_name = result["table_name"] or "N/A"
         
         # Format the output line

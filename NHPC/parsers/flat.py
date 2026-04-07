@@ -1,21 +1,6 @@
 """
-rowllect/parsers/flat.py
-------------------------
 Parser for flat NSO tables: one data row per area, with a numeric code
 column that already identifies the area level.
-
-Example (Table 01 — households and population by province/district):
-
-  prov_dist_code | prov_dist_name | households | total | male | female
-  1              | Koshi          | 1191556    | …
-  101            | Taplejung      | …
-
-long_df columns:  area_code | area_name | indicator | value
-
-The code column contains 1-digit province codes, 3-digit district codes, etc.
-nso_census.py maps these directly to feature strings via code length:
-  len 1 -> ADM1, len 3 -> ADM2, len 5 -> ADM3
-No voo resolution needed for flat tables.
 """
 
 from __future__ import annotations

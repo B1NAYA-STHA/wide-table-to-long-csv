@@ -1,19 +1,6 @@
 """
-rowllect/parsers/grouped.py
----------------------------
 Parser for grouped NSO tables: 2-3 data rows per area (Total / Male /
 Female), where areas are identified by name only (no numeric code column).
-
-Example (Table 5 — household heads by age of head, by province):
-
-  Area and sex of household head | Category | Oct-14 | 15-19 | 20-29 …
-  Nepal                          | Total    | 7331   | 67974 …
-  Koshi                          | Total    | 724    | 8243  …
-  Madhesh                        | Total    | 985    | 7245  …
-
-long_df columns:  area_name | category | indicator | value
-
-nso_census.py is responsible for resolving area_name to a numeric voo code.
 """
 
 from __future__ import annotations

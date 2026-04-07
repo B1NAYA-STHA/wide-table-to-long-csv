@@ -1,14 +1,11 @@
 """
-rowllect/parsers/base.py
-------------------------
-Abstract base class and schema dataclass for all NSO table parsers.
+Abstract base class and schema dataclass for all table parsers.
 
 A parser does two things only:
   schema(raw_bytes)         -> TableSchema   (detect structure)
   to_long(raw_bytes, schema) -> pd.DataFrame (convert to tidy long format)
 
 The pipeline layer (nso_census.py) handles everything after that:
-voo code resolution, LocationAggregator roll-up, EAV formatting.
 
 Layouts
 -------
@@ -36,7 +33,7 @@ import pandas as pd
 
 @dataclass
 class TableSchema:
-    """Describes the structure of a parsed NSO table."""
+    """Describes the structure of a parsed table."""
     title      : str            # raw title string from the file (may be '')
     subject    : str            # title with 'Table N:' and 'NPHC YYYY' stripped
     dim_names  : list[str]      # dimension column names in the long DataFrame

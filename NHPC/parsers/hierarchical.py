@@ -1,46 +1,9 @@
 """
-rowllect/parsers/hierarchical.py
----------------------------------
 Parser for NPHC XLSX tables where Province / District / Palika appear on
 their own dedicated area rows (not inline with values).
 
 Two sub-layouts are supported and auto-detected from the column headers:
 
-Sub-layout A — "sex-row" (e.g. indv16: occupation by institutional sector)
----------------------------
-  Col 0  Province   — dim row
-  Col 1  District   — dim row
-  Col 2  Palika     — dim row
-  Col 3  Sex        — dim row  (Total / Male / Female)
-  Col 4  Breakdown  — inline with values  (occupation category, age group …)
-  Col 5+ Values     — one column per sector/indicator  (single header row)
-
-  Row 3: Area | Sex and occupation | Total | Sector …
-  Row 4:      |                   |       | Govt | Fin corp | …
-
-  Detected when: the sub-header row (row4) after the value-start column
-  contains distinct non-sex labels (sector names, not Male/Female repeats).
-
-Sub-layout B — "sex-paired" (e.g. indv54: literacy by economic activity)
----------------------------
-  Col 0  Province   — dim row
-  Col 1  District   — dim row
-  Col 2  Palika     — dim row
-  Col 3  Breakdown  — inline with values  (literacy status, age group …)
-  Col 4+ Values     — pairs of (Male, Female) columns per indicator group
-
-  Row 3: Area | Literacy status | Total | Usually Active | Not usually active …
-  Row 4:      |                 | Male  | Female | Male  | Female …
-
-  Detected when: the sub-header row (row4) after the value-start column
-  consists entirely of Male / Female labels (sex-paired pattern).
-
-Both sub-layouts produce the same long_df schema:
-  province | district | palika | sex | breakdown | sector | value
-
-For sub-layout A, sex comes from the dimension row (col 3).
-For sub-layout B, sex comes from the column header (Male/Female from row4),
-and the sector/indicator name comes from the group label in row3.
 """
 
 from __future__ import annotations
@@ -160,9 +123,6 @@ def _detect_columns(raw_bytes: bytes) -> _ColInfo:
     if first_data is None:
         raise ValueError("No numeric data rows found in hierarchical sheet")
 
-    # Collect header rows: text-only rows that have content in the value columns.
-    # Rows with content only in the area columns (A-C) are dimension/area rows,
-    # not column headers — excluding them is the key to correct sub-layout detection.
     val_start_1idx = _COL_CONTENT_START + 2   # 1-indexed first value column
     header_rows = []
     for r in range(1, first_data):
@@ -184,8 +144,6 @@ def _detect_columns(raw_bytes: bytes) -> _ColInfo:
     row_top = header_rows[-2]   # group-level names  (e.g. "Total", "Usually Active")
     row_bot = header_rows[-1]   # sub-names          (e.g. "Male", "Female" or sector names)
 
-    # Value columns start at _COL_CONTENT_START + 1 (after breakdown dim)
-    # Check whether row_bot in the value area is all sex labels → sex-paired
     val_start_col = _COL_CONTENT_START + 2   # 1-indexed for openpyxl
     bot_value_labels = {
         cell_str(row_bot, c).lower()
@@ -198,8 +156,6 @@ def _detect_columns(raw_bytes: bytes) -> _ColInfo:
     value_cols: list[ValueColumn] = []
 
     if is_sex_paired:
-        # Sub-layout B: row_top = group name (carry-forward), row_bot = Male/Female
-        # breakdown is col _COL_CONTENT_START (0-indexed) = col _COL_CONTENT_START+1 (1-indexed)
         current_group = ""
         for c in range(val_start_col, n + 1):   # 1-indexed
             top = cell_str(row_top, c)
@@ -215,8 +171,6 @@ def _detect_columns(raw_bytes: bytes) -> _ColInfo:
         sub_layout = "sex_paired"
 
     else:
-        # Sub-layout A: row_top = broad group (carry-forward), row_bot = sector names
-        # Sex lives in a dimension row (col _COL_CONTENT_START, 0-indexed)
         current_group = ""
         for c in range(val_start_col, n + 1):
             top = cell_str(row_top, c)
@@ -251,9 +205,6 @@ def _parse_rows(raw_df: pd.DataFrame, col_info: _ColInfo) -> pd.DataFrame:
     Walk the data rows maintaining a dimension context and emit one record
     per (province, district, palika, sex, breakdown, sector, value) tuple.
 
-    Works for both sub-layouts:
-      sex_row    — sex comes from col _COL_CONTENT_START when no values present
-      sex_paired — sex comes from the ValueColumn descriptor
     """
     records = []
     ctx = {"province": "", "district": "", "palika": "", "sex": ""}
@@ -302,8 +253,7 @@ def _parse_rows(raw_df: pd.DataFrame, col_info: _ColInfo) -> pd.DataFrame:
             raw_val = cells[vc.index]
             if not _is_num(raw_val):
                 continue
-
-            # Sex: from column descriptor (sex_paired) or from context (sex_row)
+            
             sex = vc.sex if col_info.sub_layout == "sex_paired" else ctx["sex"]
 
             records.append({

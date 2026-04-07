@@ -1,14 +1,11 @@
 """
-rowllect/pipelines/nso_census.py
----------------------------------
 Universal NSO census pipeline.
 
 Handles flat, grouped and hierarchical table layouts through a common flow:
   pull()     Download file bytes; auto-detect or use injected parser.
   process()  parse → resolve area codes → build EAV DataFrame.
 
-Every intermediate DataFrame (parsed, clean, eav) is saved as CSV to
-./output/<resource_stem>/ when the pipeline runs from __main__ or via cli().
+Every intermediate DataFrame (parsed, clean, eav) is saved as CSV 
 
 Usage
 -----
@@ -41,7 +38,7 @@ import pandas as pd
 from loguru import logger
 from slugify import slugify
 from voo.address import parse_address
-from voo.locup import setup_lookup, get_district_code
+from voo.locup import setup_lookup, get_district_code, get_province_code
 
 from rowllect.aggregate.location_aggregator import LocationAggregator
 from rowllect.sources.base import BasePipeline
@@ -66,7 +63,6 @@ class NSOCensusPipeline(BasePipeline):
     Universal pipeline for NSO Nepal census tables.
 
     Accepts any URL (CSV or XLSX); auto-detects the layout and parser.
-    Saves parsed.csv, clean.csv and eav.csv to output/<stem>/ on every run.
     """
 
     def __init__(
@@ -178,17 +174,12 @@ def _resolve_flat(long_df: pd.DataFrame) -> pd.DataFrame:
     df["code"]     = df["area_code"].astype(str).str.strip()
     df.dropna(subset=["value"], inplace=True)
 
-    # Detect whether the code column already contains numeric census codes.
-    # A numeric code is a non-negative integer string (e.g. '1', '101', '10101').
-    # If any non-empty code value is NOT numeric, treat the whole column as
-    # area names and resolve them via voo.
     non_empty_codes = df["code"][df["code"] != ""].unique()
     all_numeric = len(non_empty_codes) > 0 and all(
         _is_numeric_code(c) for c in non_empty_codes
     )
 
     if not all_numeric:
-        # Case (b): area_code is a name string — resolve with voo
         setup_lookup()
         name_to_code = _voo_resolve_area_names(non_empty_codes)
         unmatched = [n for n in non_empty_codes if n not in name_to_code]
@@ -213,19 +204,6 @@ def _is_numeric_code(s: str) -> bool:
 
 def _resolve_grouped(long_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Grouped tables carry area names — resolve to numeric codes via voo.
-
-    Resolution cascade per name (tried in order until one succeeds):
-      1. 'Nepal' (case-insensitive)  → '0'       feature=PCL
-         Nepal is not in voo; it is the national aggregate.
-      2. get_province_code(name)     → '1'–'7'   feature=ADM1
-         Handles province names: Koshi, Madhesh, Bagmati, Gandaki,
-         Lumbini, Karnali, Sudurpaschim.
-      3. parse_address / get_district_code → 3-digit  feature=ADM2
-         Handles district names.
-      4. parse_address(resolve='palika')   → 5-digit  feature=ADM3
-         Handles palika names when they appear in grouped tables.
-
     Geographic zones that voo cannot resolve (Urban Municipalities,
     Rural Municipalities, Mountain, Hill, Tarai) are dropped with a warning.
     """
@@ -286,19 +264,7 @@ def _resolve_hierarchical(long_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _feature_from_code(code: str) -> str:
-    """
-    Map a numeric area code to its warehouse feature string.
-
-    Code length → admin level:
-      1 char  → ADM1  (province,   e.g. '1' = Koshi)
-      3 chars → ADM2  (district,   e.g. '101' = Taplejung)
-      5 chars → ADM3  (palika,     e.g. '10101')
-      7 chars → ADM4  (ward,       e.g. '1010101')
-      '0'     → PCL   (national aggregate)
-
-    Any other length falls back to PCL so national-level rows
-    ('0') are correctly labelled.
-    """
+    
     s = str(code).strip()
     if s == "0":
         return "PCL"
@@ -306,20 +272,6 @@ def _feature_from_code(code: str) -> str:
 
 
 def _voo_resolve_area_names(names) -> dict:
-    """
-    Resolve a sequence of area name strings to numeric code strings.
-
-    Tries a cascade of voo functions in increasing granularity:
-      1. National  — hardcoded: 'nepal' → '0'
-      2. Province  — get_province_code()         returns 1-digit string
-      3. District  — parse_address / get_district_code  returns 3-digit string
-      4. Palika    — parse_address(resolve='palika')    returns 5-digit string
-
-    Returns {original_name: code_string} for every name that resolved.
-    Names that cannot be resolved at any level are omitted (caller warns).
-    """
-    from voo.locup import get_province_code
-
     result: dict[str, str] = {}
 
     for name in names:

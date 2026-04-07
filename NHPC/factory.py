@@ -1,6 +1,4 @@
 """
-rowllect/parsers/factory.py
----------------------------
 Auto-select the right parser for a raw file.
 
 Detection order:

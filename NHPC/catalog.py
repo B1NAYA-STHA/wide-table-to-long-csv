@@ -1,10 +1,7 @@
 """
-rowllect/pipelines/catalog.py
-------------------------------
 Fetch, cache and query the NSO Nepal CKAN resource catalog.
 
 The API returns all resources in a single POST request.
-The response is cached to disk so subsequent runs never hit the network.
 
 Download URL formula
 --------------------
@@ -140,8 +137,6 @@ class CatalogResource:
 class Catalog:
     """
     Full resource catalog for one NSO CKAN package.
-
-    All 499 resources are returned in a single API call — no pagination.
     The response is cached to ~/.rowllect/cache/catalog_<package_id>.json.
 
     Methods
@@ -171,8 +166,6 @@ class Catalog:
         Args:
             force: Re-download even if cached.
 
-        Returns:
-            self  (for chaining: Catalog().fetch().find(table=2))
         """
         if not force and self._cache_path.exists():
             logger.info(f"Catalog: loading from cache ({self._cache_path})")

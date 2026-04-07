@@ -1,6 +1,4 @@
 """
-rowllect/parsers/_detect.py
----------------------------
 Low-level detection utilities shared by all parsers.
 """
 
