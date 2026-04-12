@@ -6,15 +6,6 @@ The API returns all resources in a single POST request.
 Download URL formula
 --------------------
   https://data.nsonepal.gov.np/dataset/{package_id}/resource/{id}/download/{url}
-
-Usage
------
-  from catalog import Catalog
-
-  cat = Catalog().fetch()           # loads from cache if available
-  cat.find(table=2, province='koshi')   # → [CatalogResource, …]
-  cat.get('bcdc88f8-…').download_url    # full URL for NSOCensusPipeline
-  cat.to_df()                           # all resources as a DataFrame
 """
 
 from __future__ import annotations
@@ -30,25 +21,64 @@ from typing import Iterator
 import pandas as pd
 from loguru import logger
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
 PACKAGE_ID = "28cc1367-d99b-4911-b43c-b4f2e1c8f5f7"
 
-_API_URL  = "https://data.nsonepal.gov.np/gridtemplate/solr_resource_search"
-_DL_BASE  = "https://data.nsonepal.gov.np/dataset/{package_id}/resource/{id}/download/{url}"
+_API_URL   = "https://data.nsonepal.gov.np/gridtemplate/solr_resource_search"
+_DL_BASE   = "https://data.nsonepal.gov.np/dataset/{package_id}/resource/{id}/download/{url}"
 _CACHE_DIR = Path.home() / ".rowllect" / "cache"
 
-_PROVINCE_MAP = {
+# Both directions for province lookup
+_NUM_TO_PROV = {
     "1": "koshi", "2": "madhesh", "3": "bagmati",
     "4": "gandaki", "5": "lumbini", "6": "karnali", "7": "sudurpashchim",
 }
+_PROV_NAMES = {
+    "koshi": "koshi", "kosi": "koshi",
+    "madhesh": "madhesh", "madhes": "madhesh",
+    "bagmati": "bagmati",
+    "gandaki": "gandaki",
+    "lumbini": "lumbini",
+    "karnali": "karnali",
+    "sudurpashchim": "sudurpashchim", "sudura paschima": "sudurpashchim",
+    "sudurpaschim": "sudurpashchim", "far west": "sudurpashchim",
+}
 
 
-# ---------------------------------------------------------------------------
-# CatalogResource
-# ---------------------------------------------------------------------------
+def _parse_province(description: str, filename: str) -> str | None:
+    """
+    Derive the lowercase province name from description and/or filename.
+
+    Handles all observed description formats:
+      "Province-1"  "Province 1"  "Province-6"
+      "Koshi"  "Karnali"  "Karnali Province"
+      ""  (falls through to filename)
+
+    Falls back to filename pattern: 'indv02-koshi.xlsx' → 'koshi'.
+    """
+    desc = (description or "").strip()
+
+    if desc:
+        # Format: "Province-N" or "Province N" or "Province N: ..."
+        m = re.search(r"\bprovince[-\s]+(\d)\b", desc, re.IGNORECASE)
+        if m:
+            return _NUM_TO_PROV.get(m.group(1))
+
+        # Format: plain province name in description ("Koshi", "Karnali Province")
+        desc_lower = desc.lower()
+        for key, canonical in _PROV_NAMES.items():
+            if key in desc_lower:
+                return canonical
+
+    # Fallback: province name embedded in filename ("indv02-koshi.xlsx")
+    m = re.search(
+        r"-(koshi|kosi|madhesh|bagmati|gandaki|lumbini|karnali|sudurpashchim|sudurpaschim)",
+        filename, re.IGNORECASE,
+    )
+    if m:
+        return _PROV_NAMES.get(m.group(1).lower())
+
+    return None
+
 
 @dataclass
 class CatalogResource:
@@ -78,7 +108,7 @@ class CatalogResource:
 
     @property
     def filename(self) -> str:
-        """Bare filename only, e.g. 'indv02-koshi.xlsx'."""
+        """Bare filename, e.g. 'indv25-gandaki.xlsx'."""
         return (self.raw.get("url") or "").strip()
 
     @property
@@ -87,7 +117,7 @@ class CatalogResource:
 
     @property
     def download_url(self) -> str:
-        """Full HTTPS download URL constructed from package_id + id + filename."""
+        """Full HTTPS download URL."""
         return _DL_BASE.format(
             package_id=self.package_id,
             id=self.id,
@@ -96,28 +126,25 @@ class CatalogResource:
 
     @property
     def table_number(self) -> int | None:
-        """Parse table number from filename: 'indv02-koshi.xlsx' → 2, 'table-34-…csv' → 34."""
+        """'indv02-koshi.xlsx' → 2,  'table-34-….csv' → 34."""
         m = re.search(r"(?:indv|table[-_]?)(\d+)", self.filename, re.IGNORECASE)
         return int(m.group(1)) if m else None
 
     @property
     def province(self) -> str | None:
-        """
-        Derive province name from description ('Province-1') or filename ('indv02-koshi').
-        Returns lowercase province name or None.
-        """
-        m = re.search(r"province[-\s]?(\d)", self.description, re.IGNORECASE)
-        if m:
-            return _PROVINCE_MAP.get(m.group(1))
-        m = re.search(
-            r"-(koshi|madhesh|bagmati|gandaki|lumbini|karnali|sudurpashchim)",
-            self.filename, re.IGNORECASE,
-        )
-        return m.group(1).lower() if m else None
+        """Lowercase province name derived from description and filename."""
+        return _parse_province(self.description, self.filename)
 
     @property
     def indicator_prefix(self) -> str:
-        """Auto-derived EAV prefix: 'indv02-koshi.xlsx' → 'nso-census/indv02-koshi'."""
+        """
+        EAV indicator prefix built from the filename stem.
+
+        'indv25-gandaki.xlsx' → 'nso-census/indv25-gandaki'
+
+        The downstream EAV builder appends dimension slugs, giving e.g.:
+          nso-census/indv25-gandaki/female/none/foreign-country
+        """
         stem = Path(self.filename).stem.lower()
         stem = re.sub(r"[^\w-]", "-", stem)
         stem = re.sub(r"-{2,}", "-", stem).strip("-")
@@ -130,43 +157,27 @@ class CatalogResource:
         )
 
 
-# ---------------------------------------------------------------------------
-# Catalog
-# ---------------------------------------------------------------------------
-
 class Catalog:
     """
     Full resource catalog for one NSO CKAN package.
-    The response is cached to ~/.rowllect/cache/catalog_<package_id>.json.
 
-    Methods
-    -------
-    fetch(force)   Load catalog (from cache or API).
-    find(...)      Filter by table, province, format, or keyword.
-    get(id)        Look up one resource by UUID.
-    to_df()        All resources as a pandas DataFrame.
+    cat = Catalog().fetch()
+    cat.find(province='koshi')          # all Koshi resources
+    cat.get('bcdc88f8-…').download_url  # URL for one resource
+    cat.to_df()                         # DataFrame of all resources
     """
 
     def __init__(self, package_id: str = PACKAGE_ID, cache_dir: Path | None = None):
-        self.package_id  = package_id
-        self._cache_dir  = Path(cache_dir or _CACHE_DIR)
+        self.package_id = package_id
+        self._cache_dir = Path(cache_dir or _CACHE_DIR)
         self._resources: list[CatalogResource] = []
 
     @property
     def _cache_path(self) -> Path:
         return self._cache_dir / f"catalog_{self.package_id}.json"
 
-    # ── fetch ─────────────────────────────────────────────────────────────────
-
     def fetch(self, force: bool = False) -> "Catalog":
-        """
-        Load the catalog. Reads from disk cache if available, otherwise POSTs
-        the API once to get all resources.
-
-        Args:
-            force: Re-download even if cached.
-
-        """
+        """Load catalog from disk cache, or POST the API if not cached."""
         if not force and self._cache_path.exists():
             logger.info(f"Catalog: loading from cache ({self._cache_path})")
             with open(self._cache_path, encoding="utf-8") as f:
@@ -177,31 +188,21 @@ class Catalog:
 
         logger.info(f"Catalog: fetching from API (package={self.package_id})")
         data = self._api_post()
-
         self._cache_dir.mkdir(parents=True, exist_ok=True)
         with open(self._cache_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-
         self._resources = [CatalogResource(raw=r) for r in data]
-        logger.info(f"Catalog: {len(self._resources)} resources cached → {self._cache_path}")
+        logger.info(f"Catalog: {len(self._resources)} resources → {self._cache_path}")
         return self
 
     def _api_post(self) -> list[dict]:
-        """POST the CKAN search API once; return the flat list of resource dicts."""
-        payload = json.dumps({
-            "keyword"   : "",
-            "package_id": self.package_id,
-        }).encode("utf-8")
-
+        payload = json.dumps({"keyword": "", "package_id": self.package_id}).encode()
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode    = ssl.CERT_NONE
-
         req = urllib.request.Request(
-            _API_URL,
-            data    = payload,
-            method  = "POST",
-            headers = {
+            _API_URL, data=payload, method="POST",
+            headers={
                 "Content-Type"    : "application/json;charset=UTF-8",
                 "Accept"          : "application/json, */*; q=0.01",
                 "X-Requested-With": "XMLHttpRequest",
@@ -209,52 +210,39 @@ class Catalog:
             },
         )
         with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-
-        return body.get("data", [])
-
-    # ── query ─────────────────────────────────────────────────────────────────
+            return json.loads(resp.read().decode("utf-8")).get("data", [])
 
     def find(
         self,
-        keyword : str       = "",
-        table   : int | None = None,
-        fmt     : str | None = None,
+        keyword : str        = "",
         province: str | None = None,
+        fmt     : str | None = None,
     ) -> list[CatalogResource]:
         """
-        Filter resources. All supplied criteria are ANDed.
+        Filter resources. All criteria are ANDed.
 
-        Args:
-            keyword:  Substring match on name + filename (case-insensitive).
-            table:    Table number, e.g. 2 matches 'indv02-koshi.xlsx'.
-            fmt:      'CSV' or 'XLSX'.
-            province: Province name, e.g. 'koshi'.
-
-        Returns:
-            List of matching CatalogResource objects sorted by position.
+        keyword:  Case-insensitive substring on name + filename.
+        province: Province name, e.g. 'koshi'.
+        fmt:      'CSV' or 'XLSX'.
         """
         if not self._resources:
-            raise RuntimeError("Catalog is empty — call fetch() first")
+            raise RuntimeError("Catalog empty — call fetch() first")
 
         results = self._resources
-
         if keyword:
             kw = keyword.lower()
             results = [r for r in results
                        if kw in r.name.lower() or kw in r.filename.lower()]
-        if table is not None:
-            results = [r for r in results if r.table_number == table]
-        if fmt:
-            results = [r for r in results if r.format == fmt.upper()]
         if province:
             prov = province.lower()
             results = [r for r in results if r.province and prov in r.province]
+        if fmt:
+            results = [r for r in results if r.format == fmt.upper()]
 
         return sorted(results, key=lambda r: r.position)
 
     def get(self, resource_id: str) -> CatalogResource:
-        """Return one resource by its UUID. Raises KeyError if not found."""
+        """Return one resource by UUID. Raises KeyError if not found."""
         for r in self._resources:
             if r.id == resource_id:
                 return r
@@ -266,10 +254,8 @@ class Catalog:
     def __iter__(self) -> Iterator[CatalogResource]:
         return iter(self._resources)
 
-    # ── export ────────────────────────────────────────────────────────────────
-
     def to_df(self) -> pd.DataFrame:
-        """All resources as a DataFrame with derived columns."""
+        """All resources as a DataFrame."""
         rows = [
             {
                 "id"              : r.id,
