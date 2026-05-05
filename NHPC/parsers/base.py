@@ -1,58 +1,36 @@
-"""
-Abstract base class and schema dataclass for all table parsers.
-
-A parser does two things only:
-  schema(raw_bytes)         -> TableSchema   (detect structure)
-  to_long(raw_bytes, schema) -> pd.DataFrame (convert to tidy long format)
-
-The pipeline layer (nso_census.py) handles everything after that:
-
-Layouts
--------
-  flat         One row per area; a numeric code column already identifies
-               the area level (province 1-digit, district 3-digit, etc.).
-               long_df columns: area_code | area_name | indicator | value
-
-  grouped      2-3 rows per area (Total / Male / Female); area identified
-               by name only — must be resolved to a code via voo.
-               long_df columns: area_name | category | indicator | value
-
-  hierarchical XLSX with Province / District / Palika / Sex on their own
-               dedicated rows; values appear on a separate breakdown row.
-               long_df columns: province | district | palika | sex
-                                | breakdown | sector | value
-"""
-
 from __future__ import annotations
-
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-
 import pandas as pd
 
 
-@dataclass
-class TableSchema:
-    """Describes the structure of a parsed table."""
-    title      : str            # raw title string from the file (may be '')
-    subject    : str            # title with 'Table N:' and 'NPHC YYYY' stripped
-    dim_names  : list[str]      # dimension column names in the long DataFrame
-    value_names: list[str]      # value/sector column names
-    layout     : str            # 'flat' | 'grouped' | 'hierarchical'
-    extras     : dict = field(default_factory=dict)  # parser-specific metadata
+class BaseLayout(ABC):
+    """
+    Contract every layout must satisfy.
 
+    To add a new layout:
+      1. Subclass this in the appropriate family package.
+      2. Implement detect(), parse(), resolve(), to_eav().
+      3. Decorate with @register.
+      4. Import the module in parsers/factory.py so the decorator fires.
 
-class BaseTableParser(ABC):
+    Detection order = registration order. Register specific layouts before
+    generic ones. FlatLayout is the fallback and must be registered last.
+    """
+
+    name: str = "unnamed"
 
     @abstractmethod
-    def schema(self, raw_bytes: bytes) -> TableSchema:
-        """Read raw bytes and return the detected table schema."""
+    def detect(self, rows: list, title_rows: set) -> bool:
+        """Return True if this layout matches the raw rows."""
 
     @abstractmethod
-    def to_long(self, raw_bytes: bytes, schema: TableSchema) -> pd.DataFrame:
-        """Convert raw bytes to a flat long DataFrame."""
+    def parse(self, raw_bytes: bytes) -> pd.DataFrame:
+        """Raw bytes → long-form DataFrame."""
 
-    def parse(self, raw_bytes: bytes) -> tuple[TableSchema, pd.DataFrame]:
-        """Convenience: return (schema, long_df) in one call."""
-        s = self.schema(raw_bytes)
-        return s, self.to_long(raw_bytes, s)
+    @abstractmethod
+    def resolve(self, long_df: pd.DataFrame) -> pd.DataFrame:
+        """Add code / feature / country columns. Drop unresolvable rows."""
+
+    @abstractmethod
+    def to_eav(self, clean_df: pd.DataFrame, indicator_prefix: str) -> pd.DataFrame:
+        """Clean DataFrame → finalised EAV DataFrame."""
