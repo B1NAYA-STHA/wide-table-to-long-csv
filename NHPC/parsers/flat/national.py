@@ -33,7 +33,7 @@ class NationalTransposedLayout(FlatBase):
     Registered before FlatLayout and TransposedAreasLayout.
     """
 
-    name = "flat_national"
+    name = "flat_national_transposed"
 
     def detect(self, rows: list, title_rows: set) -> bool:
         data_rows = [
@@ -46,27 +46,35 @@ class NationalTransposedLayout(FlatBase):
         header     = data_rows[0]
         first_data = data_rows[1]
 
-        # Header cols 1+ must have no place-name words
-        header_cells = [clean(header[c]) for c in range(1, len(header)) if clean(header[c])]
+        # If col-0 is all numeric (SN/index column), shift everything right by 1
+        col0_is_index = all(
+            is_numeric(clean(r[0])) for r in data_rows[1:]
+            if r and clean(r[0])
+        )
+        cat_col  = 1 if col0_is_index else 0
+        val_start = cat_col + 1
+
+        # Header cols after cat_col must have no place-name words
+        header_cells = [clean(header[c]) for c in range(val_start, len(header)) if clean(header[c])]
         if not header_cells or any(_has_place_word(h) for h in header_cells):
             return False
 
-        # Col-0 data must be text and contain no place-name words
-        col0_vals = [
-            clean(r[0]) for r in data_rows[1:]
-            if r and clean(r[0]) and not is_numeric(clean(r[0]))
+        # Category col data must be text and contain no place-name words
+        cat_vals = [
+            clean(r[cat_col]) for r in data_rows[1:]
+            if r and len(r) > cat_col and clean(r[cat_col]) and not is_numeric(clean(r[cat_col]))
         ]
-        if not col0_vals or any(_has_place_word(v) for v in col0_vals):
+        if not cat_vals or any(_has_place_word(v) for v in cat_vals):
             return False
 
-        # First data row: cols 1+ mostly numeric
-        rest = [clean(first_data[c]) for c in range(1, len(first_data)) if clean(first_data[c])]
+        # First data row: cols after cat_col mostly numeric
+        rest = [clean(first_data[c]) for c in range(val_start, len(first_data)) if clean(first_data[c])]
         if not rest:
             return False
         return sum(1 for v in rest if is_numeric(v)) / len(rest) >= 0.7
 
-    def parse(self, raw_bytes: bytes) -> pd.DataFrame:
-        rows, title_rows = _read(raw_bytes)
+    def parse(self, raw_bytes: bytes, sheet_name: str | None = None) -> pd.DataFrame:
+        rows, title_rows = _read(raw_bytes, sheet_name=sheet_name)
         data_rows = [
             r for i, r in enumerate(rows)
             if i not in title_rows and any(clean(c) for c in r)
@@ -74,18 +82,27 @@ class NationalTransposedLayout(FlatBase):
         if not data_rows:
             return pd.DataFrame()
 
-        header         = data_rows[0]
-        col_categories = [clean(header[c]) for c in range(1, len(header))]
+        header = data_rows[0]
+
+        # Skip SN/index col if col-0 is all numeric
+        col0_is_index = all(
+            is_numeric(clean(r[0])) for r in data_rows[1:]
+            if r and clean(r[0])
+        )
+        cat_col   = 1 if col0_is_index else 0
+        val_start = cat_col + 1
+
+        col_categories = [clean(header[c]) for c in range(val_start, len(header))]
 
         records = []
         for row in data_rows[1:]:
-            row_label = clean(row[0]) if row else ""
+            row_label = clean(row[cat_col]) if len(row) > cat_col else ""
             if not row_label or is_numeric(row_label):
                 continue
             for i, cat in enumerate(col_categories):
                 if not cat:
                     continue
-                col = i + 1
+                col = val_start + i
                 val = clean(row[col]) if col < len(row) else ""
                 if val and is_numeric(val):
                     records.append({

@@ -52,21 +52,25 @@ def read_csv_rows(path_or_bytes) -> tuple[list, set]:
     raise ValueError(f"Cannot decode {path_or_bytes}")
 
 
-def read_xlsx_rows(path_or_bytes) -> tuple[list, set]:
+def read_xlsx_rows(path_or_bytes, sheet_name: str | None = None) -> tuple[list, set]:
     from openpyxl import load_workbook
     wb  = load_workbook(io.BytesIO(path_or_bytes) if isinstance(path_or_bytes, bytes) else path_or_bytes, data_only=True)
-    ws  = wb.active
+    ws  = wb[sheet_name] if sheet_name else wb.active
     assert ws is not None
     raw = [list(row) for row in ws.iter_rows(values_only=True)]
     n   = ws.max_column
 
     # Full-width merged rows are table titles
     title_rows = {mc.min_row - 1 for mc in ws.merged_cells.ranges if mc.min_col == 1 and mc.max_col == n}
-    # Also catch title rows by content: one long text string, rest empty
+    # Also catch title rows by content: all filled cells are long strings, none numeric
     # (covers tables where the title row isn't a full-width merge)
     for ri, row in enumerate(raw):
         filled = [v for v in row if v is not None and str(v).strip()]
-        if len(filled) == 1 and isinstance(filled[0], str) and len(filled[0]) > 30:
+        if not filled:
+            continue
+        all_long_text = all(isinstance(v, str) and len(v) > 20 for v in filled)
+        none_numeric  = not any(isinstance(v, (int, float)) for v in filled)
+        if all_long_text and none_numeric:
             title_rows.add(ri)
     merge_map: dict = {}
     for mc in ws.merged_cells.ranges:

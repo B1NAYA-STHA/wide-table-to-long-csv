@@ -16,5 +16,5 @@ class FlatLayout(FlatBase):
     def detect(self, rows: list, title_rows: set) -> bool:
         return True
 
-    def parse(self, raw_bytes: bytes) -> pd.DataFrame:
-        return _parse_rows(raw_bytes, name_col=_AUTO)
+    def parse(self, raw_bytes: bytes, sheet_name: str | None = None) -> pd.DataFrame:
+        return _parse_rows(raw_bytes, name_col=_AUTO, sheet_name=sheet_name)

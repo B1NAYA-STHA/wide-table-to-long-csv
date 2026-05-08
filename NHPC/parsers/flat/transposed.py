@@ -61,8 +61,8 @@ class TransposedAreasLayout(FlatBase):
             return False
         return sum(1 for v in rest if is_numeric(v)) / len(rest) >= 0.7
 
-    def parse(self, raw_bytes: bytes) -> pd.DataFrame:
-        rows, title_rows = _read(raw_bytes)
+    def parse(self, raw_bytes: bytes, sheet_name: str | None = None) -> pd.DataFrame:
+        rows, title_rows = _read(raw_bytes, sheet_name=sheet_name)
         data_rows = [
             r for i, r in enumerate(rows)
             if i not in title_rows and any(clean(c) for c in r)

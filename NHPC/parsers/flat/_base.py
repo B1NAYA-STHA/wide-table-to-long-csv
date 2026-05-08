@@ -1,20 +1,4 @@
-"""
-Shared foundation for all flat-family layouts.
-
-Flat tables have one row per observation and columns as indicators.
-The three variants differ in how the "area" dimension is encoded:
-
-    FlatLayout           — standard: area name in a dim column, resolved via attach_codes
-    TransposedAreasLayout — areas are column headers, indicators are rows; flip then parse
-    NationalLayout        — no area column at all; every row is stamped as Nepal (code=0)
-
-All three share:
-    _read()             — detects xlsx vs csv and returns (rows, title_rows)
-    _parse_rows()       — core row-walking logic that produces long-form records
-    FlatBase            — base class with resolve() and to_eav() that subclasses inherit
-"""
 from __future__ import annotations
-
 import pandas as pd
 from loguru import logger
 
@@ -30,32 +14,24 @@ from builder.build_eav import slug, build_eav_rows
 _XLSX = (b"PK\x03\x04", b"PK\x05\x06")
 
 
-# ── I/O helper ────────────────────────────────────────────────────────────────
+def _read(raw_bytes: bytes, sheet_name: str | None = None) -> tuple[list, set]:
+    return read_xlsx_rows(raw_bytes, sheet_name=sheet_name) if raw_bytes[:4] in _XLSX else read_csv_rows(raw_bytes)
 
-def _read(raw_bytes: bytes) -> tuple[list, set]:
-    return read_xlsx_rows(raw_bytes) if raw_bytes[:4] in _XLSX else read_csv_rows(raw_bytes)
-
-
-# ── Core row walker ───────────────────────────────────────────────────────────
 
 def _parse_rows(
-    raw_bytes : bytes,
-    name_col  : int | None = None,   # None → caller supplies fixed area_name
-    fixed_area: str = "",            # used when name_col is None
+    raw_bytes  : bytes,
+    name_col   : int | None = None,
+    fixed_area : str = "",
+    sheet_name : str | None = None,
 ) -> pd.DataFrame:
     """
-    Walk a flat table and return a long-form DataFrame.
+    Walk a flat table and return a long-form DataFrame with columns:
+    area_name, indicator, value.
 
-    Columns in output:
-        area_name  — resolved from name_col (carry-forward) or fixed_area
-        indicator  — column header text
-        value      — numeric value
-
-    name_col=None + fixed_area="Nepal" is used by NationalLayout.
-    name_col is auto-detected when None is not intended — callers that want
-    auto-detection pass name_col=_AUTO (see FlatBase.parse).
+    Pass name_col=_AUTO for auto-detection, or name_col=None + fixed_area
+    for tables with no area column (e.g. national-only tables).
     """
-    rows, title_rows = _read(raw_bytes)
+    rows, title_rows = _read(raw_bytes, sheet_name=sheet_name)
     h_start, h_end, d_start = detect_header_block(rows, title_rows)
     col_names = collapse_headers(rows, h_start, h_end)
     data_rows = [r for r in rows[d_start:] if any(clean(c) for c in r)]
@@ -78,7 +54,7 @@ def _parse_rows(
                 last[c] = clean(p[c])
         if not any(clean(p[c]) for c in value_cols):
             continue
-        area = (last.get(name_col, "") if name_col is not None else fixed_area)
+        area = last.get(name_col, "") if name_col is not None else fixed_area
         for c in value_cols:
             raw = clean(p[c])
             if not raw or not is_numeric(raw):
@@ -93,22 +69,17 @@ def _parse_rows(
 
 
 class _AUTO_T:
-    """tells _parse_rows to auto-detect the name column."""
+    """Sentinel — tells _parse_rows to auto-detect the name column."""
 _AUTO = _AUTO_T()
 
 
-# ── Shared base class ─────────────────────────────────────────────────────────
-
 class FlatBase(BaseLayout):
     """
-    Base for all flat variants.
+    Base for all flat layout variants.
 
-    Subclasses must implement detect() and parse().
-    resolve() and to_eav() are provided here and work for any layout whose
-    parse() emits {area_name, indicator, value} rows.
-
-    Override resolve() for NationalLayout (no lookup needed).
-    Override to_eav() if you need extra dim columns in the indicator path.
+    Subclasses implement detect() and parse(). resolve() and to_eav() work
+    for any layout whose parse() emits {area_name, indicator, value} rows.
+    Override as needed (e.g. NationalTransposedLayout overrides both).
     """
 
     name = "flat_base"
@@ -116,7 +87,7 @@ class FlatBase(BaseLayout):
     def detect(self, rows: list, title_rows: set) -> bool:
         raise NotImplementedError
 
-    def parse(self, raw_bytes: bytes) -> pd.DataFrame:
+    def parse(self, raw_bytes: bytes, sheet_name: str | None = None) -> pd.DataFrame:
         raise NotImplementedError
 
     def resolve(self, long_df: pd.DataFrame) -> pd.DataFrame:

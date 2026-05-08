@@ -15,9 +15,9 @@ from .registry import get_registry
 _XLSX_MAGIC = (b"PK\x03\x04", b"PK\x05\x06")
 
 
-def get_layout(raw_bytes: bytes) -> BaseLayout:
+def get_layout(raw_bytes: bytes, sheet_name: str | None = None) -> BaseLayout:
     is_xlsx          = raw_bytes[:4] in _XLSX_MAGIC
-    rows, title_rows = read_xlsx_rows(raw_bytes) if is_xlsx else read_csv_rows(raw_bytes)
+    rows, title_rows = read_xlsx_rows(raw_bytes, sheet_name=sheet_name) if is_xlsx else read_csv_rows(raw_bytes)
     for layout in get_registry():
         if layout.detect(rows, title_rows):
             return layout

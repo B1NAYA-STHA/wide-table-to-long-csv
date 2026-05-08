@@ -14,7 +14,6 @@ _COL_PROVINCE  = 0
 _COL_DISTRICT  = 1
 _COL_PALIKA    = 2
 _COL_SEX_START = 3
-_VAL_START_1   = _COL_SEX_START + 2  # 1-indexed start of value columns in xlsx
 
 _SEX_LABELS = {"male", "female", "total", "both sexes", "both"}
 
@@ -56,31 +55,52 @@ def detect_value_columns(raw_bytes: bytes) -> _Info:
 
     def cs(r, c) -> str:
         v = cv(r, c)
-        return str(v).strip() if v else ""
+        return str(v).strip() if v is not None else ""
+
+    # Detect the first column that actually carries numeric data (1-indexed).
+    # Tables vary: some have 4 dim cols (province/district/palika/sex),
+    # others have 5 (province/district/palika/sex/breakdown). Scan from col 5
+    # onward to find where values actually start rather than hardcoding.
+    val_start_1 = next(
+        (c for c in range(_COL_SEX_START + 2, n + 1)
+         if any(isinstance(cv(r, c), (int, float)) for r in range(1, min(ws.max_row + 1, 50)))),
+        _COL_SEX_START + 2,
+    )
 
     first_data = next(
         (r for r in range(1, ws.max_row + 1)
-         if any(isinstance(cv(r, c), (int, float)) for c in range(_VAL_START_1, n + 1))),
+         if any(isinstance(cv(r, c), (int, float)) for c in range(val_start_1, n + 1))),
         None,
     )
     if first_data is None:
         raise ValueError("No numeric data rows found")
 
+    def _is_sub_header_row(r: int) -> bool:
+        """Row with small non-negative integers as column labels (e.g. age 0-5)."""
+        nums = [cv(r, c) for c in range(val_start_1, n + 1) if isinstance(cv(r, c), (int, float))]
+        return bool(nums) and all(isinstance(v, int) and 0 <= v <= 20 for v in nums)
+
     header_rows = [
-        r for r in range(1, first_data)
+        r for r in range(1, first_data + 1)
         if r not in title_rows
-        and not any(isinstance(cv(r, c), (int, float)) for c in range(1, n + 1))
-        and any(cs(r, c) for c in range(_VAL_START_1, n + 1))
+        and (
+            not any(isinstance(cv(r, c), (int, float)) for c in range(1, n + 1))
+            or _is_sub_header_row(r)
+        )
+        and any(cs(r, c) for c in range(val_start_1, n + 1))
     ]
     if not header_rows:
         raise ValueError("No header rows found")
+
+    # Recalculate first_data after including sub-header rows
+    first_data = max(header_rows) + 1
 
     row_top = header_rows[-2] if len(header_rows) >= 2 else header_rows[-1]
     row_bot = header_rows[-1]
 
     bot_labels = {
         cs(row_bot, c).lower()
-        for c in range(_VAL_START_1, n + 1)
+        for c in range(val_start_1, n + 1)
         if cs(row_bot, c)
     }
     is_sex_paired = bool(bot_labels) and bot_labels.issubset(_SEX_LABELS)
@@ -90,7 +110,7 @@ def detect_value_columns(raw_bytes: bytes) -> _Info:
     r, sampled = first_data, 0
     while sampled < 30 and r <= ws.max_row:
         v = cs(r, _COL_SEX_START + 1)
-        if v and not any(isinstance(cv(r, c), (int, float)) for c in range(_VAL_START_1, n + 1)):
+        if v and not any(isinstance(cv(r, c), (int, float)) for c in range(val_start_1, n + 1)):
             col3_vals.add(v.lower())
             sampled += 1
         r += 1
@@ -99,7 +119,7 @@ def detect_value_columns(raw_bytes: bytes) -> _Info:
     current_group = ""
 
     if is_sex_paired:
-        for c in range(_VAL_START_1, n + 1):
+        for c in range(val_start_1, n + 1):
             top, bot = cs(row_top, c), cs(row_bot, c)
             if top:
                 current_group = top
@@ -107,11 +127,11 @@ def detect_value_columns(raw_bytes: bytes) -> _Info:
                 value_cols.append(_VC(index=c - 1, sector=current_group, sex=bot))
         sub_layout = "sex_paired"
     else:
-        for c in range(_VAL_START_1, n + 1):
+        for c in range(val_start_1, n + 1):
             top, bot = cs(row_top, c), cs(row_bot, c)
+            if top:
+                current_group = top  # update group whenever top label is present
             label = bot or top
-            if top and not bot:
-                current_group = top
             if label:
                 sector = (
                     f"{current_group} - {label}"
@@ -121,12 +141,14 @@ def detect_value_columns(raw_bytes: bytes) -> _Info:
                 value_cols.append(_VC(index=c - 1, sector=sector, sex=""))
         sub_layout = "sex_row" if bool(col3_vals & _SEX_LABELS) else "no_sex"
 
+    # For sex_row tables with an extra breakdown col (e.g. registration status),
+    # breakdown_col points to col-4; otherwise it stays at col-3.
     breakdown_col = _COL_SEX_START + 1 if sub_layout == "sex_row" else _COL_SEX_START
     return _Info(sub_layout=sub_layout, breakdown_col=breakdown_col, value_cols=value_cols)
 
 
 def walk_rows(raw_df: pd.DataFrame, info: _Info) -> pd.DataFrame:
-    """Iterate raw xlsx DataFrame and emit one record per (area × value_col)."""
+    """Iterate raw xlsx DataFrame and emit one record per (area x value_col)."""
     records  = []
     ctx      = {"province": "", "district": "", "palika": "", "sex": "", "breakdown": ""}
     val_idxs = {vc.index for vc in info.value_cols}
